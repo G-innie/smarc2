@@ -23,6 +23,7 @@ class PipelineDetector(Node):
         self.circular_pcl_buffer = None
         self.ping_counter = 0
         self.pcl_fields = None
+        self.last_centroid = None
         self.point_cloud_subscriber = self.create_subscription(
             PointCloud2,
             self.input_topic,
@@ -44,7 +45,6 @@ class PipelineDetector(Node):
             'pipeline_detection_image',
             10
         )
-
 
 
     def _declare_and_initialize_parameters(self):
@@ -69,10 +69,13 @@ class PipelineDetector(Node):
         self.declare_parameter('normalize_intensity', True)
         self.normalize_intensity = self.get_parameter('normalize_intensity').get_parameter_value().bool_value
         self.declare_parameter('resolution', 0.5)  # meters
+        self.declare_parameter('min_translation', 0.1)  # meters
+        self.min_translation = self.get_parameter('min_translation').get_parameter_value().double_value
         self.resolution = self.get_parameter('resolution').get_parameter_value().double_value
         self.get_logger().info(f'Pipeline detection parameters: num_pings={self.num_pings_for_detection}, '
                                f'detection_frequency={self.detection_frequency}, '
-                               f'normalize_intensity={self.normalize_intensity}, resolution={self.resolution}')
+                               f'normalize_intensity={self.normalize_intensity}, resolution={self.resolution}, '
+                               f'min_translation={self.min_translation}')
 
     def _initiate_circular_buffer(self, msg):
         """
@@ -119,6 +122,14 @@ class PipelineDetector(Node):
             self.get_logger().warn('Received point cloud with all xyz values as zero, ignoring this ping.')
             return
 
+        centroid = np.mean(pcl[:, :3], axis=0)
+        if self.last_centroid is not None:
+            distance = np.linalg.norm(centroid - self.last_centroid)
+            if distance < self.min_translation:
+                self.get_logger().warn(f'Ignoring ping due to small translation: {distance:.2f} < {self.min_translation:.2f}')
+                return
+
+        self.last_centroid = centroid
         self.circular_pcl_buffer[self.ping_counter % self.num_pings_for_detection, ...] = pcl.reshape(-1, 4)
         self.ping_counter += 1
 
