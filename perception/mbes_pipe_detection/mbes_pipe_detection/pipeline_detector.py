@@ -28,8 +28,8 @@ class PipelineDetector(Node):
         )
 
 
-        self.create_timer(1.0 / self.detection_frequency, self.detection_callback)
-        self.detection_pub = self.create_publisher(
+        self.create_timer(1.0 / self.detection_frequency, self.pcl_patch_callback)
+        self.pcl_patch_pub = self.create_publisher(
             PointCloud2,
             'pipeline_detection',
             10
@@ -56,6 +56,18 @@ class PipelineDetector(Node):
         self.declare_parameter('detection_frequency', 1)  # Hz
         self.detection_frequency = self.get_parameter('detection_frequency').get_parameter_value().double_value
 
+    def _initiate_circular_buffer(self, pcl, fields):
+        """
+        Initializes the circular buffer with the first point cloud data.
+        This function is called when the first point cloud message is received.
+        """
+        num_bins = pcl.shape[0]
+        self.get_logger().info(f'Number of bins in pcl: {num_bins}')
+        self.circular_pcl_buffer = np.zeros((self.num_pings_for_detection, num_bins, 4), dtype=np.float32)
+        self.get_logger().info(f'Initialized circular pcl buffer with shape: {self.circular_pcl_buffer.shape}')
+        self.fields = fields
+        self.get_logger().info(f'Point cloud fields: {self.fields}')
+
     def point_cloud_callback(self, msg):
         """
         Callback function for the point cloud subscriber.
@@ -74,12 +86,7 @@ class PipelineDetector(Node):
 
         pcl = point_cloud2.read_points_numpy(msg, ['x', 'y', 'z', 'intensity'])
         if self.circular_pcl_buffer is None:
-            num_bins = pcl.shape[0]
-            self.get_logger().info(f'Number of bins in pcl: {num_bins}')
-            self.circular_pcl_buffer = np.zeros((self.num_pings_for_detection, num_bins, 4), dtype=np.float32)
-            self.get_logger().info(f'Initialized circular pcl buffer with shape: {self.circular_pcl_buffer.shape}')
-            self.fields = msg.fields
-            self.get_logger().info(f'Point cloud fields: {self.fields}')
+            self._initiate_circular_buffer(pcl=pcl, fields=msg.fields)
 
         # Append the new point cloud to the circular buffer
         self.circular_pcl_buffer[self.ping_counter % self.num_pings_for_detection] = pcl.reshape(1, -1, 4)
@@ -95,10 +102,11 @@ class PipelineDetector(Node):
         start_index = self.ping_counter % self.num_pings_for_detection
         return np.roll(self.circular_pcl_buffer, -start_index, axis=0)
 
-    def detection_callback(self):
+    def pcl_patch_callback(self):
         """
         This callback is called at the specified detection frequency.
-        It retrieves the ordered pings from the circular buffer and processes them for pipeline detection.
+        It retrieves the ordered pings from the circular buffer and publish the point cloud
+        patch in chronological order for pipeline detection.
         """
         ordered_pings = self.get_ordered_pings()
         if ordered_pings is None:
@@ -110,7 +118,7 @@ class PipelineDetector(Node):
         header.stamp = self.get_clock().now().to_msg()
         fields = self.fields
         points = point_cloud2.create_cloud(header, fields, ordered_pings.reshape(-1, 4))
-        self.detection_pub.publish(points)
+        self.pcl_patch_pub.publish(points)
 
 
 def main(args=None):
