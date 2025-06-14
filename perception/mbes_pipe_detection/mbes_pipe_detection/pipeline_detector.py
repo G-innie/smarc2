@@ -3,13 +3,12 @@ from rclpy.node import Node
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, Image
 from sensor_msgs_py import point_cloud2
-import cv2
 from cv_bridge import CvBridge
 from tf2_ros import Buffer, TransformListener
-from mbes_pipe_detection.tf2_sensor_msgs import do_transform_cloud
-
-from scipy.interpolate import griddata
 import numpy as np
+
+from mbes_pipe_detection.tf2_sensor_msgs import do_transform_cloud
+from mbes_pipe_detection import utils as mbes_utils
 
 class PipelineDetector(Node):
     def __init__(self):
@@ -140,6 +139,7 @@ class PipelineDetector(Node):
         If not enough pings have been received, it returns None.
         """
         if self.ping_counter < self.num_pings_for_detection:
+            self.get_logger().warn(f'Not enough pings received yet: {self.ping_counter} < {self.num_pings_for_detection}')
             return None
         start_index = self.ping_counter % self.num_pings_for_detection
         ordered_pings = np.roll(self.circular_pcl_buffer, -start_index, axis=0)
@@ -157,7 +157,6 @@ class PipelineDetector(Node):
         """
         ordered_pings = self.get_ordered_pings(normalize=self.normalize_intensity)
         if ordered_pings is None:
-            self.get_logger().info('Not enough pings received yet for detection.')
             return
 
         header = Header()
@@ -167,57 +166,26 @@ class PipelineDetector(Node):
         points = point_cloud2.create_cloud(header, fields, ordered_pings.reshape(-1, 4))
         self.pcl_patch_pub.publish(points)
 
+
     def detection_callback(self):
         """
         This callback is called at the specified detection frequency.
         It retrieves the ordered pings from the circular buffer and performs pipeline detection.
         The results are published as an Image message.
         """
-        intensity_image = self.construct_intensity_image_from_circular_pcl_buffer()
-
-    def construct_intensity_image_from_circular_pcl_buffer(self):
-        """
-        Constructs an intensity image from the ordered pings.
-        """
         ordered_pings = self.get_ordered_pings(normalize=self.normalize_intensity)
-        if ordered_pings is None:
+        intensity_dict = mbes_utils.pcl_buffer_to_intensity(ordered_pings, self.resolution)
+
+        if intensity_dict is None:
+            self.get_logger().warn('Not enough pings received to construct intensity image.')
             return None
+        intensity_image = intensity_dict['intensity_image']
+        mask = intensity_dict['mask']
+        normalized_image = mbes_utils.normalize_intensity_image(intensity_image)
+        image_msg = self.cv_bridge.cv2_to_imgmsg(normalized_image, encoding='mono8')
 
-        x = ordered_pings[:, :, 0]
-        y = ordered_pings[:, :, 1]
-        z = ordered_pings[:, :, 2]
-        intensities = ordered_pings[:, :, 3]
-
-        x_min, x_max = (np.min(x), np.max(x))
-        y_min, y_max = (np.min(y), np.max(y))
-        num_x_pixels = int((x_max - x_min) / self.resolution)
-        num_y_pixels = int((y_max - y_min) / self.resolution)
-
-        if num_x_pixels <= 0 or num_y_pixels <= 0:
-            self.get_logger().warn('Invalid number of pixels for intensity image, skipping detection.')
-            return None
-
-        self.get_logger().info(f'Constructing intensity image with shape: ({num_y_pixels}, {num_x_pixels})')
-        X, Y = np.meshgrid(
-            np.linspace(x_min, x_max, num_x_pixels),
-            np.linspace(y_min, y_max, num_y_pixels)
-        )
-        intensity_image = griddata(
-            (x.flatten(), y.flatten()),
-            intensities.flatten(),
-            (X, Y),
-            method='linear',
-        )
-
-        intensity_image_normalized = cv2.normalize(
-            intensity_image,
-            None,
-            alpha=0,
-            beta=255,
-            norm_type=cv2.NORM_MINMAX,
-        ).astype(np.uint8)
-        image_msg = self.cv_bridge.cv2_to_imgmsg(intensity_image_normalized, encoding='mono8')
         self.detection_image_pub.publish(image_msg)
+        # TODO: detection logic goes here
 
 
 def main(args=None):
