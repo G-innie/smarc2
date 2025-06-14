@@ -94,7 +94,10 @@ class PipelineDetector(Node):
         # Transform the point cloud to the desired frame if necessary
         if msg.header.frame_id != self.utm_frame:
             try:
-                transform = self.tf_buffer.lookup_transform(self.utm_frame, msg.header.frame_id, rclpy.time.Time())
+                transform = self.tf_buffer.lookup_transform(self.utm_frame,
+                                                            # msg.header.frame_id,
+                                                            self.frame_id,
+                                                            rclpy.time.Time())
                 msg = do_transform_cloud(msg, transform)
             except Exception as e:
                 self.get_logger().error(f'Error transforming point cloud: {e}')
@@ -131,7 +134,7 @@ class PipelineDetector(Node):
         ordered_pings = np.roll(self.circular_pcl_buffer, -start_index, axis=0)
 
         if normalize:
-            mean_intensity = np.mean(ordered_pings[:, :, 3], axis=0)
+            mean_intensity = np.mean(ordered_pings[:, :, -1], axis=0)
             ordered_pings[..., -1] /= mean_intensity
         return ordered_pings
 
@@ -178,6 +181,11 @@ class PipelineDetector(Node):
         y_min, y_max = (np.min(y), np.max(y))
         num_x_pixels = int((x_max - x_min) / self.resolution)
         num_y_pixels = int((y_max - y_min) / self.resolution)
+
+        if num_x_pixels <= 0 or num_y_pixels <= 0:
+            self.get_logger().warn('Invalid number of pixels for intensity image, skipping detection.')
+            return None
+
         self.get_logger().info(f'Constructing intensity image with shape: ({num_y_pixels}, {num_x_pixels})')
         X, Y = np.meshgrid(
             np.linspace(x_min, x_max, num_x_pixels),
@@ -189,6 +197,7 @@ class PipelineDetector(Node):
             (X, Y),
             method='linear',
         )
+
         intensity_image_normalized = cv2.normalize(
             intensity_image,
             None,
