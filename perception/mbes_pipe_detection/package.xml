@@ -3,9 +3,9 @@
 <package format="3">
   <name>mbes_pipe_detection</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="liling@kth.se">li</maintainer>
-  <license>TODO: License declaration</license>
+  <description>Pipeline detection from MBES point clouds</description>
+  <maintainer email="liling@kth.se">Li Ling</maintainer>
+  <license>MIT</license>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

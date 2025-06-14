@@ -13,13 +13,14 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='li',
+    maintainer='Li Ling',
     maintainer_email='liling@kth.se',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Pipeline detection from MBES point clouds',
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'pipeline_detector = mbes_pipe_detection.pipeline_detector:main',
         ],
     },
 )
