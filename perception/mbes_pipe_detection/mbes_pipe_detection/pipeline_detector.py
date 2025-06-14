@@ -30,13 +30,6 @@ class PipelineDetector(Node):
             100
         )
 
-        self.create_timer(0.1, self.pcl_patch_callback)
-        self.pcl_patch_pub = self.create_publisher(
-            PointCloud2,
-            'pcl_patch_for_pipeline_detection',
-            10
-        )
-
         self.cv_bridge = CvBridge()
         self.create_timer(1.0 / self.detection_frequency, self.detection_callback)
         self.detection_image_pub = self.create_publisher(
@@ -148,23 +141,6 @@ class PipelineDetector(Node):
             mean_intensity = np.mean(ordered_pings[:, :, -1], axis=0)
             ordered_pings[..., -1] /= mean_intensity
         return ordered_pings
-
-    def pcl_patch_callback(self):
-        """
-        This callback is called at the specified detection frequency.
-        It retrieves the ordered pings from the circular buffer and publish the point cloud
-        patch in chronological order for pipeline detection.
-        """
-        ordered_pings = self.get_ordered_pings(normalize=self.normalize_intensity)
-        if ordered_pings is None:
-            return
-
-        header = Header()
-        header.frame_id = self.utm_frame
-        header.stamp = self.get_clock().now().to_msg()
-        fields = self.fields
-        points = point_cloud2.create_cloud(header, fields, ordered_pings.reshape(-1, 4))
-        self.pcl_patch_pub.publish(points)
 
 
     def detection_callback(self):
