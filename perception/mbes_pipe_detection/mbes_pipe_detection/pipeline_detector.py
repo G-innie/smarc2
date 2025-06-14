@@ -55,6 +55,8 @@ class PipelineDetector(Node):
         self.num_pings_for_detection = self.get_parameter('num_pings_for_detection').get_parameter_value().integer_value
         self.declare_parameter('detection_frequency', 1)  # Hz
         self.detection_frequency = self.get_parameter('detection_frequency').get_parameter_value().double_value
+        self.declare_parameter('normalize_intensity', True)
+        self.normalize_intensity = self.get_parameter('normalize_intensity').get_parameter_value().bool_value
 
     def _initiate_circular_buffer(self, pcl, fields):
         """
@@ -77,7 +79,6 @@ class PipelineDetector(Node):
         # Transform the point cloud to the desired frame if necessary
         if msg.header.frame_id != self.utm_frame:
             try:
-                # TODO: transform to msg.header.frame_id instead
                 transform = self.tf_buffer.lookup_transform(self.utm_frame, msg.header.frame_id, rclpy.time.Time())
                 msg = do_transform_cloud(msg, transform)
             except Exception as e:
@@ -92,7 +93,8 @@ class PipelineDetector(Node):
         self.circular_pcl_buffer[self.ping_counter % self.num_pings_for_detection] = pcl.reshape(1, -1, 4)
         self.ping_counter += 1
 
-    def get_ordered_pings(self):
+
+    def get_ordered_pings(self, normalize=True):
         """
         Returns an ordered chronological view of the circular point cloud buffer.
         If not enough pings have been received, it returns None.
@@ -100,7 +102,14 @@ class PipelineDetector(Node):
         if self.ping_counter < self.num_pings_for_detection:
             return None
         start_index = self.ping_counter % self.num_pings_for_detection
-        return np.roll(self.circular_pcl_buffer, -start_index, axis=0)
+        ordered_pings = np.roll(self.circular_pcl_buffer, -start_index, axis=0)
+
+        if normalize:
+            mean_intensity = np.mean(ordered_pings[:, :, 3], axis=0)
+            ordered_pings[..., -1] /= mean_intensity
+        return ordered_pings
+
+
 
     def pcl_patch_callback(self):
         """
@@ -108,7 +117,7 @@ class PipelineDetector(Node):
         It retrieves the ordered pings from the circular buffer and publish the point cloud
         patch in chronological order for pipeline detection.
         """
-        ordered_pings = self.get_ordered_pings()
+        ordered_pings = self.get_ordered_pings(normalize=self.normalize_intensity)
         if ordered_pings is None:
             self.get_logger().info('Not enough pings received yet for detection.')
             return
