@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, Image
 from sensor_msgs_py import point_cloud2
 from tf2_ros import Buffer, TransformListener
@@ -16,10 +17,30 @@ class PipelineDetector(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        self.circular_pcl_buffer = None
+        self.ping_counter = 0
+        self.pcl_fields = None
+        self.point_cloud_subscriber = self.create_subscription(
+            PointCloud2,
+            self.input_topic,
+            self.point_cloud_callback,
+            100
+        )
+
+
+        self.create_timer(1.0 / self.detection_frequency, self.detection_callback)
+        self.detection_pub = self.create_publisher(
+            PointCloud2,
+            'pipeline_detection',
+            10
+        )
+
 
     def _declare_and_initialize_parameters(self):
         self.declare_parameter('input_topic', '/lolo/sensors/mbes/bathymetry/points')
         self.input_topic = self.get_parameter('input_topic').get_parameter_value().string_value
+        self.declare_parameter('output_topic', 'pipeline_detection')
+        self.output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
         self.declare_parameter('frame_id', 'lolo/base_link')
         self.frame_id = self.get_parameter('frame_id').get_parameter_value().string_value
         self.declare_parameter('utm_zone', '33')
@@ -29,10 +50,68 @@ class PipelineDetector(Node):
         self.utm_frame = f'utm_{self.utm_zone}_{self.utm_band}'
         self.get_logger().info(f'Using UTM frame: {self.utm_frame}')
 
-        self.declare_parameter('num_pings', 50)
-        self.num_pings = self.get_parameter('num_pings').get_parameter_value().integer_value
-        self.declare_parameter('detection_frequency', 0.1)  # Hz
+        # Declare parameters for pipeline detection
+        self.declare_parameter('num_pings_for_detection', 100)
+        self.num_pings_for_detection = self.get_parameter('num_pings_for_detection').get_parameter_value().integer_value
+        self.declare_parameter('detection_frequency', 1)  # Hz
         self.detection_frequency = self.get_parameter('detection_frequency').get_parameter_value().double_value
+
+    def point_cloud_callback(self, msg):
+        """
+        Callback function for the point cloud subscriber.
+        This function processes incoming PointCloud2 messages, transforms them to the UTM frame if necessary,
+        and appends the points to the circular_pcl_buffer.
+        """
+        # Transform the point cloud to the desired frame if necessary
+        if msg.header.frame_id != self.utm_frame:
+            try:
+                # TODO: transform to msg.header.frame_id instead
+                transform = self.tf_buffer.lookup_transform(self.utm_frame, msg.header.frame_id, rclpy.time.Time())
+                msg = do_transform_cloud(msg, transform)
+            except Exception as e:
+                self.get_logger().error(f'Error transforming point cloud: {e}')
+                return
+
+        pcl = point_cloud2.read_points_numpy(msg, ['x', 'y', 'z', 'intensity'])
+        if self.circular_pcl_buffer is None:
+            num_bins = pcl.shape[0]
+            self.get_logger().info(f'Number of bins in pcl: {num_bins}')
+            self.circular_pcl_buffer = np.zeros((self.num_pings_for_detection, num_bins, 4), dtype=np.float32)
+            self.get_logger().info(f'Initialized circular pcl buffer with shape: {self.circular_pcl_buffer.shape}')
+            self.fields = msg.fields
+            self.get_logger().info(f'Point cloud fields: {self.fields}')
+
+        # Append the new point cloud to the circular buffer
+        self.circular_pcl_buffer[self.ping_counter % self.num_pings_for_detection] = pcl.reshape(1, -1, 4)
+        self.ping_counter += 1
+
+    def get_ordered_pings(self):
+        """
+        Returns an ordered chronological view of the circular point cloud buffer.
+        If not enough pings have been received, it returns None.
+        """
+        if self.ping_counter < self.num_pings_for_detection:
+            return None
+        start_index = self.ping_counter % self.num_pings_for_detection
+        return np.roll(self.circular_pcl_buffer, -start_index, axis=0)
+
+    def detection_callback(self):
+        """
+        This callback is called at the specified detection frequency.
+        It retrieves the ordered pings from the circular buffer and processes them for pipeline detection.
+        """
+        ordered_pings = self.get_ordered_pings()
+        if ordered_pings is None:
+            self.get_logger().info('Not enough pings received yet for detection.')
+            return
+
+        header = Header()
+        header.frame_id = self.utm_frame
+        header.stamp = self.get_clock().now().to_msg()
+        fields = self.fields
+        points = point_cloud2.create_cloud(header, fields, ordered_pings.reshape(-1, 4))
+        self.detection_pub.publish(points)
+
 
 def main(args=None):
     rclpy.init(args=args)
